@@ -4,8 +4,6 @@ define('TOKEN_FILE', 'tmp' . DIRECTORY_SEPARATOR . 'token_info.json');
 
 require_once(__DIR__ . '/vendor/autoload.php');
 
-session_start();
-
 $clientId = '2c582496-c102-496d-97f2-327b6fa1eea0';
 $clientSecret = 'WAjAy8JYoMuZ0xvmp5fDaSemHh61yhczSRrescDGaOFjzRwzLvBMhUCnzoENIaxS';
 $redirectUri = 'https://ya.ru';
