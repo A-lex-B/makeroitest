@@ -1,36 +1,56 @@
 <?php
+
 use League\OAuth2\Client\Token\AccessToken;
 use AmoCRM\Client\AmoCRMApiClient;
 use League\OAuth2\Client\Token\AccessTokenInterface;
-use AmoCRM\Filters\EventsFilter;
-use AmoCRM\Filters\LeadsFilter;
+use AmoCRM\Models\CustomFieldsValues\ValueCollections\NullCustomFieldValueCollection;
 use AmoCRM\Models\CustomFieldsValues\NumericCustomFieldValuesModel;
-use \AmoCRM\Models\CustomFieldsValues\ValueCollections\NumericCustomFieldValueCollection;
-use \AmoCRM\Models\CustomFieldsValues\ValueModels\NumericCustomFieldValueModel;
-use AmoCRM\Exceptions\AmoCRMApiException;
-use AmoCRM\Exceptions\AmoCRMApiPageNotAvailableException;
-use AmoCRM\Exceptions\AmoCRMApiNoContentException;
-
-if (file_exists('lastExecutionTime.txt')) {
-    $lastExucutionTime = file_get_contents('lastExecutionTime.txt');
-}
-file_put_contents('lastExecutionTime.txt', time());
-if (empty($lastExucutionTime)) {
-    $lastExucutionTime = time() - 3600 * 24 * 3;
-}
+use AmoCRM\Models\CustomFieldsValues\ValueCollections\NumericCustomFieldValueCollection;
+use AmoCRM\Models\CustomFieldsValues\ValueModels\NumericCustomFieldValueModel;
 
 define('TOKEN_FILE', 'tmp' . DIRECTORY_SEPARATOR . 'token_info.json');
 
 require_once(__DIR__ . '/vendor/autoload.php');
+require_once(__DIR__ . '/keys.php');
 
-$clientId = '2c582496-c102-496d-97f2-327b6fa1eea0';
-$clientSecret = 'WAjAy8JYoMuZ0xvmp5fDaSemHh61yhczSRrescDGaOFjzRwzLvBMhUCnzoENIaxS';
-$redirectUri = 'https://ya.ru';
+//ID поля "Себестоимость"
+$costPriceFieldID = 1331471;
+//ID поля "Прибыль"
+$incomeFieldID = 1331527;
+
+//Получение массива параметров сделки из вебхука
+if (isset($_POST) && isset($_POST['leads'])) {
+    if (isset($_POST['leads']['add'])) {
+        $leadFields = $_POST['leads']['add'][0];
+    } elseif (isset($_POST['leads']['update'])) {
+        $leadFields = $_POST['leads']['update'][0];
+    }
+} else exit;
+
+//Получение значений полей
+$price = $leadFields['price'] ?? null;
+if (isset($leadFields['custom_fields'])) {
+    foreach ($leadFields['custom_fields'] as $customField) {
+        if (in_array($costPriceFieldID, $customField)) {
+            $costPrice = $customField['values'][0]['value'];
+        } elseif (in_array($incomeFieldID, $customField)) {
+            $income = $customField['values'][0]['value'];
+        }
+    }
+}
+
+if (
+    (isset($price) && isset($costPrice) && isset($income) && ($income == $price - $costPrice))
+    || (!isset($income) && (empty($price) || !isset($costPrice)))
+) {
+    exit;
+}
+
+//Получение и обновление сделки
+usleep(300000);
 
 $apiClient = new AmoCRMApiClient($clientId, $clientSecret, $redirectUri);
-
 $accessToken = getToken();
-
 $apiClient->setAccessToken($accessToken)
     ->setAccountBaseDomain($accessToken->getValues()['baseDomain'])
     ->onAccessTokenRefresh(
@@ -46,97 +66,33 @@ $apiClient->setAccessToken($accessToken)
         }
     );
 
-//Массив ID отслеживаемых дополнительных полей сделок
-$customFieldsIDs = ['1331471'];
 
-//Получение событий
-$eventService = $apiClient->events();
-$eventsFilter = new EventsFilter();
-$eventsFilter->setTypes(['lead_added', 'sale_field_changed', 'custom_field_value_changed'])
-    ->setCreatedAt($lastExucutionTime);
-
-try {
-    $events = $eventService->get($eventsFilter);
-} catch(AmoCRMApiNoContentException) {
-    echo 'Нет измененных полей или новых сделок';
-    exit;
-} catch (AmoCRMApiException $e) {
-    printError($e);
-    die;
-}
-
-try {
-    $leadsToCount = [];
-    while (true) {
-        $eventsArray = $events->toArray();
-        foreach ($eventsArray as $event) {
-            if (
-                !preg_match('/custom_field_(\d+)_value_changed/', $event['type'], $matches) ||
-                in_array($matches[1], $customFieldsIDs)
-            ) {
-                if (!in_array($event['entity_id'], $leadsToCount)) {
-                    $leadsToCount[] = $event['entity_id'];
-                }
-            }
-        }
-        usleep(200000);
-        $events = $eventService->nextPage($events);
-    }
-} catch(AmoCRMApiPageNotAvailableException | AmoCRMApiNoContentException) {
-} catch (AmoCRMApiException $e) {
-    printError($e);
-    die;
-}
-
-//Получение и редактирование сделок
 $leadsService = $apiClient->leads();
-$leadsFilter = new LeadsFilter();
-$leadsFilter->setIds($leadsToCount);
-$leads = $leadsService->get($leadsFilter);
+$lead = $leadsService->getOne($leadFields['id']);
 
-try {
-    while(true) {
-        foreach ($leads as $lead) {
-            $costPriceValue = null;
-            $price = $lead->getPrice();
-            $customFields = $lead->getCustomFieldsValues();
-            if (!empty($customFields)) {
-                $costPrice = $customFields->getBy('fieldId', 1331471);
-                if ($costPrice) {
-                    $costPriceValue = $costPrice->getValues()->first()->getValue();
-                }
-            }
-            if (empty($price) || empty($costPriceValue))
-                continue;
+$customFields = $lead->getCustomFieldsValues();
+$incomeField = $customFields->getBy('fieldId', $incomeFieldID);
 
-            $incom = $customFields->getBy('fieldId', 1331527);
-            if (!$incom) {
-                $incom = (new NumericCustomFieldValuesModel())->setFieldId(1331527);
-                $incomValueCollection = new NumericCustomFieldValueCollection();
-                $incomValueModel = new NumericCustomFieldValueModel();
-                $incomValueCollection->add($incomValueModel);
-                $incom->setValues($incomValueCollection);
-                $customFields->add($incom);
-            }
-            
-            $incomValue = $price - $costPriceValue;
-            if ($incomValue < 0) {
-                $incomValue = 0;
-            }
-            $incom->getValues()->first()->setValue($incomValue);
-        }
-
-        $leadsService->update($leads);
-
-        usleep(300000);
-        $leads = $leadsService->nextPage($leads);
+if (isset($income) && (empty($price) || !isset($costPrice))) {
+    $incomeField->setValues(new NullCustomFieldValueCollection());
+} else {
+    if (!$incomeField) {
+        $incomeField = (new NumericCustomFieldValuesModel())->setFieldId($incomeFieldID);
+        $incomeFieldValueCollection = new NumericCustomFieldValueCollection();
+        $incomeFieldValueModel = new NumericCustomFieldValueModel();
+        $incomeFieldValueCollection->add($incomeFieldValueModel);
+        $incomeField->setValues($incomeFieldValueCollection);
+        $customFields->add($incomeField);
     }
-} catch (AmoCRMApiPageNotAvailableException | AmoCRMApiNoContentException) {
-} catch (AmoCRMApiException $e) {
-    printError($e);
-    die;
+    $income = $price - $costPrice;
+    if ($income < 0) {
+        $income = 0;
+    }
+    $incomeField->getValues()->first()->setValue($income);
 }
-   
+
+$leadsService->updateOne($lead);
+
 function saveToken($accessToken)
 {
     if (
