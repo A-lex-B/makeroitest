@@ -1,3 +1,4 @@
 /vendor
 /tmp
 keys.php
+check_token.php

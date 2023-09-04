@@ -56,11 +56,11 @@ $eventsFilter->setTypes(['lead_added', 'sale_field_changed', 'custom_field_value
 
 try {
     $events = $eventService->get($eventsFilter);
-} catch(AmoCRMApiNoContentException) {
+} catch (AmoCRMApiNoContentException) {
     echo 'Нет измененных полей или новых сделок';
     exit;
 } catch (AmoCRMApiException $e) {
-    echo 'Ошибка: ' . $e->getTitle() . '<br>Код: ' . $e->getErrorCode();
+    errorInfo($e);
     die;
 }
 
@@ -81,9 +81,9 @@ try {
         usleep(200000);
         $events = $eventService->nextPage($events);
     }
-} catch(AmoCRMApiPageNotAvailableException | AmoCRMApiNoContentException) {
+} catch (AmoCRMApiPageNotAvailableException | AmoCRMApiNoContentException) {
 } catch (AmoCRMApiException $e) {
-    echo 'Ошибка: ' . $e->getTitle() . '<br>Код: ' . $e->getErrorCode();
+    errorInfo($e);
     die;
 }
 if(!$leadsToCount) {
@@ -119,6 +119,7 @@ try {
                 (isset($price) && isset($costPrice) && isset($income) && ($income == $price - $costPrice))
                 || (!isset($income) && (empty($price) || !isset($costPrice)))
             ) {
+                $leads->removeBy('id', $lead->getId());
                 continue;
             } elseif (isset($income) && (empty($price) || !isset($costPrice))) {
                 $incomeField->setValues(new NullCustomFieldValueCollection());
@@ -141,14 +142,16 @@ try {
             $incomeField->getValues()->first()->setValue($income);
         }
 
-        $leadsService->update($leads);
-
+        if (!$leads->isEmpty()) {
+            $leadsService->update($leads);
+        }
+        
         usleep(300000);
         $leads = $leadsService->nextPage($leads);
     }
 } catch (AmoCRMApiPageNotAvailableException | AmoCRMApiNoContentException) {
 } catch (AmoCRMApiException $e) {
-    echo 'Ошибка: ' . $e->getTitle() . '<br>Код: ' . $e->getErrorCode();
+    errorInfo($e);
     die;
 }
    
@@ -194,4 +197,18 @@ function getToken()
     } else {
         exit('Invalid access token ' . var_export($accessToken, true));
     }
+}
+
+function errorInfo(AmoCRMApiException $e) {
+    $errorTitle = $e->getTitle();
+    $code = $e->getCode();
+    $debugInfo = var_export($e->getLastRequestInfo(), true);
+        
+    $error = <<<EOF
+    Error: $errorTitle
+    Code: $code
+    Debug: $debugInfo
+    EOF;
+    
+    echo '<pre>' . $error . '</pre>';
 }
